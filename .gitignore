@@ -8,3 +8,4 @@ experiments/results/
 *.csv
 *.jsonl
 *.log
+data/
