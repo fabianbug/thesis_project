@@ -1,6 +1,7 @@
 # LTLf generation with large language models
 
-This project is my bachelor’s thesis. I study how well LLMs can turn short natural language rules into **LTLf** formulas. For each rule in natural language, the system asks an LLM to produce a formula. Then I compare that formula against a **gold** (ground‑truth) formula. Right now the comparison is a simple string check; soon it will use the **BLACK** tool to check real semantic equivalence.
+This project is my bachelor’s thesis. I study how well LLMs can turn short natural language rules into **LTLf** formulas. For each rule in natural language, the system asks an LLM to produce a formula. Then I compare that formula against a **gold** (ground‑truth) formula. Right now the comparison is a simple string check. 
+Soon it will use the **BLACK** tool to check real semantic equivalence.
 
 The repository is small on purpose and aims to be easy to run and to reproduce. Code lives in `src/`, sample test cases live in `data/testcases/`, and all results are written to `experiments/results/` so it is always clear where outputs goes.
 
@@ -32,7 +33,8 @@ cp .env.example .env
 
 ```
 OPENAI_API_KEY=abc123...
-SEED=42
+GROQ_API_KEY=def456...
+GEMINI_API_KEY=ghi789...
 ```
 
 No quotes are needed for the API keys.
