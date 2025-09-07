@@ -15,7 +15,7 @@ GROQ_API_KEY   = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 def require(name: str, value: str | None):
-    """Wirf eine klare Fehlermeldung, wenn ein benötigter Key fehlt."""
+    """Error if key is missing"""
     if not value or not value.strip():
         raise RuntimeError(f"{name} is missing. Add it to your .env")
     return value
