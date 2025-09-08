@@ -3,10 +3,10 @@ from typing import Optional
 from openai import OpenAI
 
 from src.config import OPENAI_API_KEY, require
-from src.pipeline.json_handling import LLMResponse, _extract_json
+from pipeline.response_json_handling import LLMResponse, _extract_json
 
 class OpenAIModel:
-    def __init__(self, model: str, api_key: Optional[str] = None, temperature: float = 0.2):
+    def __init__(self, model: str, api_key: Optional[str] = None, temperature: float = 1.0):
         key = api_key or require("OPENAI_API_KEY", OPENAI_API_KEY)
         self.client = OpenAI(api_key=key)
         self.model = model
