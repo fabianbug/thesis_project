@@ -9,7 +9,6 @@ SYSTEM_PROMPT = """You translate natural-language constraints into DECLARE speci
   ]
 }
 
-
 2. SYNTAX DECLARE:
 proper DECLARE syntax will be put here later
 
@@ -22,4 +21,5 @@ proper DECLARE syntax will be put here later
 - Input: Natural Language 
 - Output: JSON with DECLARE specification
 
+Translate the following natural language constraint into DECLARE specification.
 """
