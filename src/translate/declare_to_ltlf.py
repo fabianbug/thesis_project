@@ -1,65 +1,72 @@
 from __future__ import annotations
+import re
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Callable, Any
-import re, json, subprocess, tempfile, shlex
+from typing import Dict, List, Callable, Any
 
-
-
+# AP sanitization
 _AP_SAFE = re.compile(r"[^A-Za-z0-9_]")
-
-
 def sanitize_ap(name: str) -> str:
-    """
-    Turn an activity label like 'close order' into a valid atomic proposition, e.g. A_close_order.
-    - Keep it deterministic and reversible via the returned map.
-    """
     core = name.strip().lower().replace(" ", "_")
     core = _AP_SAFE.sub("_", core)
-    return f"A_{core}"
-
-
-@dataclass
-class TranslateResult:
-    ltlf: str                 # full LTLf formula (conjunction of constraints)
-    constraints_ltlf: List[str]  # each constraint's LTLf
-    ap_map: Dict[str, str]    # original activity -> AP identifier (for debugging/trace explanations)
-
+    prefix = core[0].upper() if core else "A"
+    return f"{prefix}_{core}"
 
 # LTLf helpers
-def X(phi: str) -> str:  return f"X({phi})"
-def F(phi: str) -> str:  return f"F({phi})"
-def G(phi: str) -> str:  return f"G({phi})"
-def U(phi1: str, phi2: str) -> str: return f"({phi1}) U ({phi2})"
-def Not(phi: str) -> str: return f"¬({phi})"
-def And(*args: str) -> str: return " ∧ ".join(f"({a})" for a in args)
-def Or(*args: str) -> str:  return " ∨ ".join(f"({a})" for a in args)
-def Implies(a: str, b: str) -> str: return Or(Not(a), b)
-def Iff(a: str, b: str) -> str: return And(Implies(a,b), Implies(b,a))
-def True_() -> str: return "true"
-def Last() -> str: return Not(X(True_()))  # ¬X true  — standard LTLf encoding
-def Xw(phi: str) -> str: return Or(X(phi), Last())  # weak-next via X + Last
+def X(phi: str) -> str:                 return f"X({phi})"
+def F(phi: str) -> str:                 return f"F({phi})"
+def G(phi: str) -> str:                 return f"G({phi})"
+def U(a: str, b: str) -> str:           return f"(({a}) U ({b}))"
+def Not(phi: str) -> str:               return f"!({phi})"
+def And(*args: str) -> str:             return " & ".join(f"({a})" for a in args if a)
+def Or(*args: str) -> str:              return " | ".join(f"({a})" for a in args if a)
+def Implies(a: str, b: str) -> str:     return f"({a} -> {b})"
+def Iff(a: str, b: str) -> str:         return And(Implies(a,b), Implies(b,a))
+def True_() -> str:                     return "true"
+def Last() -> str:                      return Not(X(True_()))  # ¬X true  — standard LTLf encoding
+def Xw(phi: str) -> str:                return Or(X(phi), Last())  # weak-next via X + Last
 
+# Template encodings for LTLf
+def _resp(a, b):            return G(Implies(a, F(b)))                       # response(a,b)
+def _prec(a, b):            return Or(U(Not(b), a), G(Not(b)))               # precedence(a,b)
+def _succ(a, b):            return And(_resp(a,b), _prec(a,b))               # succession(a,b)
+def _chain_resp(a, b):      return G(Implies(a, X(b)))                       # chain-response(a,b)
+def _exist(a):              return F(a)                                      # existence(a)
+def _absence(a):            return G(Not(a))                                 # absence(a)
+def _exactly1(a):           return And(F(a), Not(F(And(a, F(a)))))           # exactly(a) ~ exactly 1
+def _resp_exist(a, b):      return Implies(F(a), F(b))                        # responded-existence(a,b)
+def _coexist(a, b):         return And(_resp_exist(a,b), _resp_exist(b,a))    # coexistence(a,b)
+def _choice(a, b):          return Or(F(a), F(b))                             # choice(a,b)
+def _excl_choice(a, b):     return And(_choice(a,b), Not(And(F(a), F(b))))    # exclusive-choice(a,b)
+def _neg_resp(a, b):        return G(Implies(a, Not(F(b))))                   # neg-response(a,b)
+def _not_succ(a, b):        return _neg_resp(a, b)                            # not-succession(a,b)
+def _neg_chain_resp(a, b):  return G(Implies(a, Not(X(b))))                   # neg-chain-response(a,b)
+def _init(a):               return a                                          # init(a): hold at pos 0
+def _end(a):                return F(f"({a}) & {Last()}")                                     # end(a): occurs at some final pos
 
-# ========== DECLARE → LTLf template mapping ==========
-
-# Canonical template keys (lowercase, hyphenated)
-# We support common aliases to be resilient to small naming differences.
+def _is_int(s: str) -> bool:
+    try:
+        int(s); return True
+    except Exception:
+        return False
+    
+# Aliases 
 ALIASES: Dict[str, str] = {
-    # existence class
+    # existence family
     "existence": "existence",
-    "existence(1)": "existence",
     "absence": "absence",
     "exactly": "exactly",
-    "at-most-one": "at-most-one",
-    "at_most_one": "at-most-one",
+    "at-most-one": "absence",      # treat as absence(1)
+    "at_most_one": "absence",
     "atleastone": "existence",
     "at-least-one": "existence",
     "at_least_one": "existence",
-    # choice
+
+    # choice family
     "choice": "choice",
     "exclusive-choice": "exclusive-choice",
     "exclusive_choice": "exclusive-choice",
-    # relation
+
+    # relation family
     "responded-existence": "responded-existence",
     "responded_existence": "responded-existence",
     "coexistence": "coexistence",
@@ -78,337 +85,184 @@ ALIASES: Dict[str, str] = {
     "chain_precedence": "chain-precedence",
     "chain-succession": "chain-succession",
     "chain_succession": "chain-succession",
-    # negation family (common names seen in papers/repos)
+
+    # negative family
     "neg-response": "neg-response",
-    "negation-response": "neg-response",
+    "neg_response": "neg-response",
     "not-response": "neg-response",
+    "not_response": "neg-response",
+
+    "not-responded-existence": "not-responded-existence",
+    "not_responded_existence": "not-responded-existence",
+    "neg-responded-existence": "not-responded-existence",
+    "neg_responded_existence": "not-responded-existence",
+
+    "not-chain-response": "not-chain-response",
+    "not_chain_response": "not-chain-response",
+    "neg-chain-response": "not-chain-response",
+    "neg_chain_response": "not-chain-response",
+
+    "not-succession": "neg-succession",
+    "non-succession": "neg-succession",
+    "not_succession": "neg-succession",
+    "non_succession": "neg-succession",
+
+    "not-precedence": "not-precedence",
+    "not_precedence": "not-precedence",
+    "neg-precedence": "not-precedence",
+    "neg_precedence": "not-precedence",
+
+    "not-chain-precedence": "not-chain-precedence",
+    "not_chain_precedence": "not-chain-precedence",
+    "neg-chain-precedence": "not-chain-precedence",
+    "neg_chain_precedence": "not-chain-precedence",
+
     "neg-chain-response": "neg-chain-response",
-    "negation-chain-response": "neg-chain-response",
     "not-chain-response": "neg-chain-response",
-    "not-succession": "not-succession",
-    "non-succession": "not-succession",
-    "not_chain_succession": "not-chain-succession",
-    "not-chain-succession": "not-chain-succession",
-    # sometimes used:
+    "neg_chain_response": "neg-chain-response",
+    "not_chain_response": "neg-chain-response",
+
     "not-coexistence": "not-coexistence",
-    "non-coexistence": "not-coexistence",
-    # boundary templates
+    "not_coexistence": "not-coexistence",
+
+    # boundaries
     "init": "init",
     "start": "init",
     "end": "end",
     "finish": "end",
 }
 
-# Implementations:
-# NOTE: I stick to standard LTLf operators {G,F,X,U,¬,∧,∨} only.
-# Where literature uses Xw, we emit Xw via (X φ) ∨ Last().
-def _tpl_existence(x: str) -> str:
-    return F(x)
-
-def _tpl_absence(x: str) -> str:
-    return Not(F(x))  # ¬F x
-
-def _tpl_exactly(x: str, n: int = 1) -> str:
-    # For exactly(1, x) ≡ existence(x) ∧ absence(2, x)
-    # We provide n=1 now; extend if you later need counts >1 (requires counters).
-    return And(F(x), Not(F(And(x, F(x)))))  # crude finite-trace proxy for "at most once"
-    # For production, implement a counter-based automaton or LDLf; for now keep n=1 scope.
-
-def _tpl_choice(x: str, y: str) -> str:
-    return Or(F(x), F(y))
-
-def _tpl_exclusive_choice(x: str, y: str) -> str:
-    # choice(x,y) ∧ ¬(F(x) ∧ F(y))
-    return And(Or(F(x), F(y)), Not(And(F(x), F(y))))
-
-def _tpl_responded_existence(x: str, y: str) -> str:
-    return Implies(F(x), F(y))  # F x -> F y
-
-def _tpl_coexistence(x: str, y: str) -> str:
-    return And(Implies(F(x), F(y)), Implies(F(y), F(x)))
-
-def _tpl_response(x: str, y: str) -> str:
-    return G(Implies(x, F(y)))  # G (x -> F y)
-
-def _tpl_precedence(x: str, y: str) -> str:
-    # (¬y U x) ∨ G(¬y)
-    return Or(U(Not(y), x), G(Not(y)))
-
-def _tpl_succession(x: str, y: str) -> str:
-    # response(x,y) ∧ precedence(x,y)
-    return And(_tpl_response(x, y), _tpl_precedence(x, y))
-
-def _tpl_alt_response(x: str, y: str) -> str:
-    # G (x -> X(¬x U y))
-    return G(Implies(x, X(U(Not(x), y))))
-
-def _tpl_alt_precedence(x: str, y: str) -> str:
-    # precedence(x,y) ∧ G(y -> Xw(precedence(x,y)))
-    return And(
-        _tpl_precedence(x, y),
-        G(Implies(y, Xw(_tpl_precedence(x, y))))
-    )
-
-def _tpl_alt_succession(x: str, y: str) -> str:
-    return And(_tpl_alt_response(x, y), _tpl_alt_precedence(x, y))
-
-def _tpl_chain_response(x: str, y: str) -> str:
-    return G(Implies(x, X(y)))  # immediate next
-
-def _tpl_chain_precedence(x: str, y: str) -> str:
-    # G(X y -> x) ∧ ¬y (at position 0)
-    # A common finite-trace encoding seen in literature tables:
-    return And(G(Implies(X(y), x)), Not(y))
-
-def _tpl_chain_succession(x: str, y: str) -> str:
-    return And(_tpl_chain_response(x, y), _tpl_chain_precedence(x, y))
-
-def _tpl_neg_response(x: str, y: str) -> str:
-    # G (x -> ¬F y)
-    return G(Implies(x, Not(F(y))))
-
-def _tpl_neg_chain_response(x: str, y: str) -> str:
-    # G (x -> ¬X y)
-    return G(Implies(x, Not(X(y))))
-
-def _tpl_not_coexistence(x: str, y: str) -> str:
-    return Not(And(F(x), F(y)))
-
-
-def _tpl_init(x: str) -> str:
-    # Init(x): x must hold at the first position (we evaluate at position 0)
-    return x
-
-def _tpl_end(x: str) -> str:
-    # End(x): x must hold at the last position
-    return F(And(Last(), x))
-
-def _tpl_at_most_one(x: str) -> str:
-    # AtMostOne(x): x occurs at most once
-    # Equivalent to: not (exists two distinct positions with x), encoded as: ¬F(x ∧ F(x))
-    return Not(F(And(x, F(x))))
-
-def _tpl_not_succession(x: str, y: str) -> str:
-    # Not-Succession(x,y): if x occurs, then y cannot occur afterwards
-    # Note: This equals our "neg-response" semantics in common Declare repertoires
-    return G(Implies(x, Not(F(y))))
-
-def _tpl_not_chain_succession(x: str, y: str) -> str:
-    # Not-Chain-Succession(x,y): y must not occur immediately after x
-    return G(Implies(x, Not(X(y))))
-
-
-
-# Registry of callable constructors
+# Dispatcher
 TEMPLATES: Dict[str, Callable[..., str]] = {
-    # Existence family (only n=1 explicitly supported here)
-    "existence": lambda x: _tpl_existence(x),
-    "absence":   lambda x: _tpl_absence(x),
-    "exactly":   lambda x: _tpl_exactly(x, 1),
+    "existence": lambda x: _exist(x),                        
+    "absence":   lambda x, n=1: _absence(x, n),             
+    "exactly":   lambda x, n=1: _exactly1(x, n),              
 
-    # Choice
-    "choice":             lambda x, y: _tpl_choice(x, y),
-    "exclusive-choice":   lambda x, y: _tpl_exclusive_choice(x, y),
+    "choice":              lambda x, y: _choice(x, y),
+    "exclusive-choice":    lambda x, y: _excl_choice(x, y),
 
-    # Relations
-    "responded-existence": lambda x, y: _tpl_responded_existence(x, y),
-    "coexistence":         lambda x, y: _tpl_coexistence(x, y),
-    "response":            lambda x, y: _tpl_response(x, y),
-    "precedence":          lambda x, y: _tpl_precedence(x, y),
-    "succession":          lambda x, y: _tpl_succession(x, y),
+    "responded-existence": lambda x, y: _resp_exist(x, y),
+    "coexistence":         lambda x, y: _coexist(x, y),
+    "response":            lambda x, y: _resp(x, y),
+    "precedence":          lambda x, y: _prec(x, y),
+    "succession":          lambda x, y: _succ(x, y),
+    "alternate-response":  lambda x, y: G(Implies(x, X(U(Not(x), y)))),  # G(x -> X(!x U y))
+    "alternate-precedence":lambda x, y: Or(U(Not(y), X(x)), G(Not(y))),   # (true U (!y X x)) & G(!y)
+    "alternate-succession":lambda x, y: And(
+                                    G(Implies(x, X(U(Not(x), y)))),  # G(x -> X(!x U y))
+                                    Or(U(Not(y), X(x)), G(Not(y)))    # (true U (!y X x)) & G(!y)
+                                ),
+    "chain-precedence":    lambda x, y: Or(U(Not(y), X(x)), G(Not(y))),   # (true U (!y X x)) & G(!y)
 
-    "alternate-response":    lambda x, y: _tpl_alt_response(x, y),
-    "alternate-precedence":  lambda x, y: _tpl_alt_precedence(x, y),
-    "alternate-succession":  lambda x, y: _tpl_alt_succession(x, y),
+    "chain-response":      lambda x, y: _chain_resp(x, y),
 
-    "chain-response":    lambda x, y: _tpl_chain_response(x, y),
-    "chain-precedence":  lambda x, y: _tpl_chain_precedence(x, y),
-    "chain-succession":  lambda x, y: _tpl_chain_succession(x, y),
+    "neg-response":        lambda x, y: _neg_resp(x, y),
 
-    # Negation family
-    "neg-response":         lambda x, y: _tpl_neg_response(x, y),
-    "neg-chain-response":   lambda x, y: _tpl_neg_chain_response(x, y),
+    "not-chain-response":      lambda x, y: G(Implies(x, Not(X(y)))), # G(x -> !X y)
 
-    # sometimes used
-    "not-coexistence":      lambda x, y: _tpl_not_coexistence(x, y),
+    "not-responded-existence": lambda x, y: Implies(F(x), Not(F(y))),
 
-        # Boundary templates
-    "init":            lambda x: _tpl_init(x),
-    "end":             lambda x: _tpl_end(x),
+    "not-precedence":          lambda x, y: G(Implies(y, H(Not(x)))),   # G(y -> H ¬x)
 
-    # Existence variant
-    "at-most-one":     lambda x: _tpl_at_most_one(x),
+    "not-chain-precedence":    lambda x, y: G(Implies(y, Not(Y(x)))),   # G(y -> ¬Y x)
 
-    # Negative succession family
-    "not-succession":        lambda x, y: _tpl_not_succession(x, y),
-    "not-chain-succession":  lambda x, y: _tpl_not_chain_succession(x, y),
 
+    "neg-succession":      lambda x, y: _not_succ(x, y),
+    "neg-chain-response":  lambda x, y: _neg_chain_resp(x, y),
+
+    "not-coexistence":     lambda x, y: Not(And(F(x), F(y))),
+
+    "init":                lambda x: _init(x),
+    "end":                 lambda x: _end(x),
 }
-
 
 def _canon_template(name: str) -> str:
     n = name.strip().lower().replace(" ", "-")
     return ALIASES.get(n, n)
 
 
-# ========== Public API ==========
 
-def translate_declare_constraints(declare_list: List[Dict[str, Any]]) -> TranslateResult:
-    """
-    Input: [{"template": "response", "args": ["close order", "pay order"]}, ...]
-    Output: LTLf for the conjunction of all constraints + per-constraint list + AP map.
-    """
-    # First pass: collect all activity labels to build a stable AP map
-    activities: List[str] = []
-    for c in declare_list:
-        args = c.get("args", [])
-        for a in args:
-            if isinstance(a, str) and a not in activities:
-                activities.append(a)
+# Parsing DECLARE strings
+_DECL_RE = re.compile(r"\s*([A-Za-z][A-Za-z0-9_\-\s]*)\s*\(\s*([^)]+)\s*\)\s*$")
 
-    ap_map: Dict[str, str] = {a: sanitize_ap(a) for a in activities}
-    constraints_ltlf: List[str] = []
+def split_declare_constraints(declare_str: str) -> List[str]:
+    parts = re.split(r"[;\n]+", declare_str.strip())
+    return [p.strip() for p in parts if p.strip()]
 
-    for c in declare_list:
-        tpl_raw = c.get("template", "")
-        tpl = _canon_template(tpl_raw)
-        if tpl not in TEMPLATES:
-            raise ValueError(f"Unsupported/unknown DECLARE template: {tpl_raw!r} (normalized: {tpl})")
+def parse_declare_string(spec: str) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for raw in split_declare_constraints(spec):
+        m = _DECL_RE.match(raw)
+        if not m:
+            raise ValueError(f"Unrecognized DECLARE constraint: {raw}")
+        templ = m.group(1).strip()
+        args = [a.strip() for a in m.group(2).split(",")]
+        items.append({"template": templ, "args": args})
+    return items
 
-        args = c.get("args", [])
-        # Map activity labels to AP identifiers
-        ap_args: List[str] = [ap_map.get(a, sanitize_ap(str(a))) for a in args]
 
-        # Arity checking (1 or 2)
-        fn = TEMPLATES[tpl]
-        try:
-            if len(ap_args) == 1:
-                ltlf = fn(ap_args[0])  # existence/absence/exactly
-            elif len(ap_args) == 2:
-                ltlf = fn(ap_args[0], ap_args[1])  # binary templates
+
+
+# Public APIs
+@dataclass
+class EncodeResult:
+    formula: str                  # single LTLf formula (conjunction)
+    per_constraint: List[str]     # LTLf per constraint
+    ap_map: Dict[str, str]        # original label -> AP
+
+def declare_string_to_ltlf(spec: str) -> str: #return only the single LTLf formula
+    return declare_string_to_ltlf_with_map(spec).formula
+
+def declare_string_to_ltlf_with_map(spec: str) -> EncodeResult:
+    parsed = parse_declare_string(spec)
+
+    # collect activities for stable AP map
+    acts: List[str] = []
+    for c in parsed:
+        for a in c["args"]:
+            if a not in acts:
+                acts.append(a)
+    ap_map = {a: sanitize_ap(a) for a in acts}
+
+    per: List[str] = []
+    for c in parsed:
+        tpl = ALIASES.get(c["template"].lower(), c["template"].lower())
+        args_raw = [a.strip() for a in c["args"]]
+
+        def _map_ap(a: str) -> str:
+            return ap_map.get(a, sanitize_ap(a))
+
+        args_map = [_map_ap(a) for a in args_raw]
+
+        if tpl in ("exactly", "absence") and len(args_raw) == 2 and (_is_int(args_raw[0]) or _is_int(args_raw[1])):
+            if _is_int(args_raw[0]):
+                n = int(args_raw[0]); x = args_map[1]
             else:
-                raise ValueError(f"Template {tpl} requires 1 or 2 args, got {len(ap_args)}")
-        except TypeError as e:
-            raise ValueError(f"Template {tpl} arity mismatch: {e}")
+                n = int(args_raw[1]); x = args_map[0]
+            per.append(TEMPLATES[tpl](x, n))   # <-- per, nicht formulas
+            continue
 
-        constraints_ltlf.append(ltlf)
+        if tpl not in TEMPLATES:
+            raise ValueError(f"Unsupported/unknown DECLARE template: {c['template']!r} (normalized: {tpl})")
 
-    full = And(*constraints_ltlf) if constraints_ltlf else True_()
-    return TranslateResult(ltlf=full, constraints_ltlf=constraints_ltlf, ap_map=ap_map)
+        fn = TEMPLATES[tpl]
+        
+        if len(args_map) == 1:
+            per.append(fn(args_map[0]))
+        elif len(args_map) == 2:
+            per.append(fn(args_map[0], args_map[1]))
+        else:
+            raise ValueError(f"Template {tpl} requires 1 or 2 args, got {len(args_map)}")
 
+    formula = And(*per) if per else "true"
+    return EncodeResult(formula=formula, per_constraint=per, ap_map=ap_map)
 
-def translate_phi_json(phi_obj: Dict[str, Any]) -> TranslateResult:
-    """
-    Expects: {"declare": [ ...constraints... ]} as in your testcases.
-    """
-    if "declare" not in phi_obj or not isinstance(phi_obj["declare"], list):
-        raise ValueError("phi_obj must contain key 'declare' with a list of constraints.")
-    return translate_declare_constraints(phi_obj["declare"])
-
-
-def translate_psi_json(psi_obj: Dict[str, Any]) -> TranslateResult:
-    """
-    Same structure as phi: a DECLARE JSON from the LLM response (after you've parsed/validated it).
-    """
-    if "declare" not in psi_obj or not isinstance(psi_obj["declare"], list):
-        raise ValueError("psi_obj must contain key 'declare' with a list of constraints.")
-    return translate_declare_constraints(psi_obj["declare"])
-
-
-# ========== BLACK equivalence (stub) ==========
-
-def build_biimplication(phi_ltlf: str, psi_ltlf: str) -> str:
-    """
-    Compose a bi-implication formula φ ↔ ψ for equivalence checking.
-    """
-    return Iff(phi_ltlf, psi_ltlf)
-
-
-def _black_check_valid(ltlf_formula: str) -> bool:
-    """
-    Returns True iff the LTLf formula is valid (tautology).
-    Adjust the command to BLACK's CLI on your system.
-    """
-    # Example CLI pattern (adapt to your installation):
-    # black --logic ltlf --mode valid "<formula>"
-    cmd = f'black --logic ltlf --mode valid {shlex.quote(ltlf_formula)}'
-    res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    if res.returncode != 0:
-        raise RuntimeError(f"BLACK valid failed: {res.stderr.strip() or res.stdout.strip()}")
-    # Assume BLACK prints "VALID" / "NOT VALID" (adapt if different)
-    return "VALID" in res.stdout.upper()
-
-def _black_find_model(ltlf_formula: str) -> str | None:
-    """
-    Try to get a witness trace that satisfies the formula (if any).
-    Returns a textual model/trace or None if UNSAT.
-    """
-    # Example CLI pattern (adapt to your installation):
-    # black --logic ltlf --mode sat "<formula>"
-    cmd = f'black --logic ltlf --mode sat {shlex.quote(ltlf_formula)}'
-    res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    if res.returncode != 0:
-        raise RuntimeError(f"BLACK sat failed: {res.stderr.strip() or res.stdout.strip()}")
-    out = res.stdout.upper()
-    if "UNSAT" in out:
-        return None
-    # Otherwise return raw witness (you can parse/pretty-print later)
-    return res.stdout.strip()
-
-def check_equivalence_with_black(phi_ltlf: str, psi_ltlf: str) -> Tuple[bool, Dict[str, Any]]:
-    """
-    Use BLACK to check equivalence on finite traces.
-    - First: valid(Iff(phi, psi))
-    - If not valid: try witnesses for phi ∧ ¬psi and psi ∧ ¬phi
-    """
-    biimp = build_biimplication(phi_ltlf, psi_ltlf)
-    try:
-        if _black_check_valid(biimp):
-            return True, {}
-        # Not equivalent: 
-        w1 = _black_find_model(And(phi_ltlf, Not(psi_ltlf)))
-        w2 = _black_find_model(And(psi_ltlf, Not(phi_ltlf)))
-        info = {}
-        if w1: info["phi_and_not_psi"] = w1
-        if w2: info["psi_and_not_phi"] = w2
-        return False, info
-    except Exception as e:
-        raise RuntimeError(f"BLACK integration error: {e}")
-
-
-# ========== Quick manual test ==========
-
+# Quick test 
 if __name__ == "__main__":
-    # Example from your README text
-    raw = """
-    {"declare":[
-        {"template":"response","args":["close order","pay order"]},
-        {"template":"precedence","args":["close order","pay order"]},
-        {"template":"negation-response","args":["cancel order","pay order"]}
-    ]}
-    """.strip()
-    phi = json.loads(raw)
-    res = translate_phi_json(phi)
+    decl = "precedence(close order, pay order) \nresponse(close order, pay order) \nnegation-response(cancel order, pay order)"
+    res = declare_string_to_ltlf_with_map(decl)
     print("AP map:", res.ap_map)
-    print("\nConstraints (LTLf):")
-    for i, f in enumerate(res.constraints_ltlf, 1):
+    print("LTLf per constraint:")
+    for i, f in enumerate(res.per_constraint, 1):
         print(f"  [{i}] {f}")
-    print("\nPHI (conjunction):")
-    print(res.ltlf)
-    # just testing if it works
-    tests = [
-    ("response(a,b)", [{"template":"response","args":["A","B"]}],
-     "G (A_a -> F(B_b))"),
-    ("precedence(a,b)", [{"template":"precedence","args":["A","B"]}],
-     "(¬(B_b)) U (A_a) ∨ G(¬(B_b))"),
-    ("chain-response(a,b)", [{"template":"chain-response","args":["A","B"]}],
-     "G (A_a -> X(B_b))"),
-    ("not-succession(a,b)", [{"template":"not-succession","args":["A","B"]}],
-     "G (A_a -> ¬F(B_b))"),
-    ("end(a)", [{"template":"end","args":["A"]}],
-     "F((¬X(true)) ∧ (A_a))"),
-    ]
-    for name, decl, expected_sub in tests:
-        rr = translate_declare_constraints(decl)
-        assert expected_sub.replace(" ", "") in rr.ltlf.replace(" ", ""), f"{name} mismatch: {rr.ltlf}"
-    print("Template smoke tests passed.")
+    print("Conjunction:\n", res.formula)

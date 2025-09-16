@@ -1,77 +1,137 @@
+from __future__ import annotations
 from pathlib import Path
-from hashlib import sha256
 from datetime import datetime
-import argparse
-from src.models.registry import create_runner
-from src.utils.io_utils import read_jsonl, write_jsonl
-from src.config import EXP
-from src.translate.prompts import SYSTEM_PROMPT    # the system prompt
-from src.pipeline.response_json_handling import LLMResponse, _extract_json
+import argparse, os, sys
 
-#from src.translate.declare_to_ltlf import # todo declare_to_ltlf 
+from src.system_prompts.prompts import NL_to_DECLARE, DECLARE_to_NL, NL_to_LTLf, LTLf_to_NL
+from src.models.registry import create_runner
+from src.translate.declare_to_ltlf import declare_string_to_ltlf
+from src.utils.parse_utils import parse_declare_set
+from src.eval.black_equivalence_checker import ltlf_equivalent
+
+
+# Uses two LLMs:
+#   - LLM_A: DECLARE->NL  and  LTLf->NL
+#   - LLM_B: NL->DECLARE  and  NL->LTLf
+
+
+def read_text(path: Path) -> str:
+    return Path(path).read_text(encoding="utf-8").strip()
+
+
+def write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(content, encoding="utf-8")
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--provider", default="openai")
-    ap.add_argument("--model", default="gpt-5")
-    ap.add_argument("--input", default="data/testcases/testcases.jsonl")
-    ap.add_argument("--out", default=None)
-    ap.add_argument("--temperature", type=float, default=1.0) # for tuning creativity 
+    ap = argparse.ArgumentParser(description="One-pass NL↔DECLARE↔LTLf pipeline (two LLMs, string-only).")
+    
+    # LLM A (DECLARE to NL and LTLf to NL)
+    ap.add_argument("--provider-a", default="openai")
+    ap.add_argument("--model-a", required=True, help="LLM A for DECLARE to NL and LTLf to NL")
+    ap.add_argument("--temperature-a", type=float, default=1.0)
+
+    # LLM B (NL to DECLARE and NL to LTLf)
+    ap.add_argument("--provider-b", default="openai")
+    ap.add_argument("--model-b", required=True, help="LLM B for NL to DECLARE and NL to LTLf")
+    ap.add_argument("--temperature-b", type=float, default=1.0)
+
+    # IO
+    ap.add_argument("--testcase", required=True, help="Plain-text file with DECLARE constraints (ϕ).")
+    ap.add_argument("--outdir", default="experiments/runs", help="Output directory for artifacts.")
+    ap.add_argument("--black-bin", default=None, help="Optional path to black-sat (if not on PATH).")
+
     args = ap.parse_args()
 
-    runner = create_runner(provider=args.provider, model=args.model, temperature=args.temperature)
+    # BLACK path via env var für den Checker
+    if args.black_bin:
+        os.environ["BLACK_BIN"] = args.black_bin
 
-    input_path = Path(args.input) or Path("data/testcases/testcases.jsonl") # path to testcase file
-    output_path = Path(args.out) if args.out else Path("experiments/results") # output directory
-    output_path.mkdir(parents=True, exist_ok=True) 
+    # Runner erzeugen
+    llm_a = create_runner(provider=args.provider_a, model=args.model_a, temperature=args.temperature_a)
+    llm_b = create_runner(provider=args.provider_b, model=args.model_b, temperature=args.temperature_b)
+
+    # Run-Verzeichnis
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    base  = f"{input_path.stem}_{args.provider}_{args.model}_t{args.temperature:.1f}_{stamp}"
-    result_path = output_path / f"{base}.jsonl"
-    print(f"Input: {input_path}, Output: {result_path}")
+    out_root = Path(args.outdir) / f"{stamp}_{args.model_a}_A__{args.model_b}_B"
+    artifacts = out_root / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+
+    # 1) Input PHI DECLARE einlesen
+    phi_declare = read_text(Path(args.testcase))
+    write_text(artifacts / "phi.declare.txt", phi_declare)
+
+    # BRANCH A: DECLARE ↔ NL
+    # A1: PHI DECLARE -> NL  (LLM A)
+    nl_from_declare = llm_a.generate(system=DECLARE_to_NL, user=phi_declare).strip()
+    write_text(artifacts / "phi.nl.txt", nl_from_declare)
+
+    # A2: NL -> PSI DECLARE   (LLM B)
+    psi_declare = llm_b.generate(system=NL_to_DECLARE, user=nl_from_declare).strip()
+    write_text(artifacts / "psi.declare.txt", psi_declare)
+
+    # A3: Syntaktischer Vergleich (Set-Diff)
+    set_phi = parse_declare_set(phi_declare)
+    set_psi = parse_declare_set(psi_declare)
+    missing = sorted(set_phi - set_psi)
+    added   = sorted(set_psi - set_phi)
+    syntactic_ok = (not missing and not added)
+
+    report_syn = []
+    report_syn.append("=== Syntactic comparison (DECLARE sets) ===")
+    report_syn.append(f"original PHI={len(set_phi)}   roundtrip PSI={len(set_psi)}")
+    report_syn.append(f"OK? {syntactic_ok}")
+    if missing:
+        report_syn.append("Missing in PSI (present in PHI):")
+        report_syn += [f"  - {c}" for c in missing]
+    if added:
+        report_syn.append("Added in PSI (not in PHI):")
+        report_syn += [f"  + {c}" for c in added]
+    write_text(artifacts / "declare_setdiff.txt", "\n".join(report_syn))
+
+    # BRANCH B: DECLARE → LTLf ↔ NL ↔ LTLf (Semantic check) 
+    # B1: PHI DECLARE -> PHI LTLf (encoder)
+    phi_ltlf = declare_string_to_ltlf(phi_declare).strip()
+    write_text(artifacts / "phi.ltlf.txt", phi_ltlf)
+
+    # B2: PHI LTLf -> NL  (LLM A)
+    nl_from_ltlf = llm_a.generate(system=LTLf_to_NL, user=phi_ltlf).strip()
+    write_text(artifacts / "phiL.nl.txt", nl_from_ltlf)
+
+    # B3: NL -> PSI LTLf  (LLM B)
+    psi_ltlf = llm_b.generate(system=NL_to_LTLf, user=nl_from_ltlf).strip()
+    write_text(artifacts / "psi.ltlf.txt", psi_ltlf)
+
+    # B4: semantic equivalence (BLACK/Aaltaf). skipped if no solver is there
+    semantics_status = "skipped"
+    try:
+        is_equiv = ltlf_equivalent(phi_ltlf, psi_ltlf)
+        semantics_status = "equivalent" if is_equiv else "not_equivalent"
+    except Exception as e:
+        semantics_status = f"skipped: {e.__class__.__name__}"
+
     
-    rows = []
 
-    for i, ex in enumerate(read_jsonl(input_path), start=1):
-        #ID for the example
-        id = ex.get("id")
-        
-        #check that phi (ground truth) is not pasted to prompt
-        nl = ex["nl"]
-        phi = ex.get("phi", {}) 
-        phi_formula = str(phi.get("declare") or "")
-        # check that solution (phi) is not in prompt
-        if phi_formula:
-            assert phi_formula not in SYSTEM_PROMPT, "System prompt contains gold formula"
-            assert phi_formula not in nl, "NL contains gold formula"
-            
-        #prompt sha hashed     
-        to_send = SYSTEM_PROMPT + "\n" + nl
-        prompt_sha = sha256(to_send.encode("utf-8")).hexdigest()
 
-        r = runner.generate(
-            system_prompt=SYSTEM_PROMPT,
-            nl_spec=nl,
-        )
-        rows.append({
-            "id": id,
-            "provider": args.provider,
-            "model": args.model,
-            "psi_declare": r.declare,
-            "latency_ms": r.latency_ms,
-            "tokens_in": r.tokens_in,
-            "tokens_out": r.tokens_out,
-            "raw": r.raw,
-            "meta": {
-                "system_ver": "declare",
-                "temperature": args.temperature,
-                "prompt_sha256": prompt_sha,
-                "ts_utc": datetime.now().isoformat(timespec="seconds"),
-                "model_id": r.raw.get("model") if isinstance(r.raw, dict) else None
-            }
-        })
-    write_jsonl(result_path, rows)
-    print(f"Wrote {result_path}")
+
+
+
+    summary_lines = []
+    summary_lines.append("=== Round-trip Summary ===")
+    summary_lines.append(f"Testcase: {Path(args.testcase).name}")
+    summary_lines.append(f"LLM A (DECLARE->NL, LTLf->NL): {args.provider_a}/{args.model_a}  T={args.temperature_a}")
+    summary_lines.append(f"LLM B (NL->DECLARE, NL->LTLf): {args.provider_b}/{args.model_b}  T={args.temperature_b}")
+    summary_lines.append("")
+    summary_lines.append(f"[Syntax] DECLARE set comparison: {'OK' if syntactic_ok else 'DIFF'}")
+    summary_lines.append(f"[Semantics] LTLf equivalence: {semantics_status}")
+    write_text(out_root / "summary.txt", "\n".join(summary_lines))
+
+    # Console-Output
+    print("\n".join(summary_lines))
+    print(f"\nArtifacts written to: {out_root}\n")
+
 
 if __name__ == "__main__":
-    main()
+    # Allow running via: python -m src.pipeline.run_generation --args...
+    sys.exit(main())

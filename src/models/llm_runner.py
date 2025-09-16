@@ -24,47 +24,50 @@ class LLMRunner:
         else:
             raise ValueError(f"Unknown provider: {provider}")
 
-    # generate a response and parse it into LLMResponse 
-    def generate(self, system_prompt: str, nl_spec: str) -> LLMResponse:
-        
-        t0 = time.time()
-        r = self.client.chat.completions.create(
-            model=self.model,
-            temperature=self.temperature,
-            response_format={"type": "json_object"},  # ensure JSON 
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": nl_spec},
-            ],
-        )
-        dt = int((time.time() - t0) * 1000)
-        text = r.choices[0].message.content or ""
+    # generate a response 
+    def generate(self, system: str = None, user: str = None, messages: list = None, **kwargs) -> str:
+    
+        if messages is None:
+            if system is None or user is None:
+                raise ValueError("Provide either (system,user) or messages.")
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]
 
-        declare = _extract_json(text)
-        if not declare:
-            # Fallback: get text as declare and leave declare empty
-            declare = text.strip(), []
+        if getattr(self, "provider", None) == "openai":
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=self.temperature,
+            )
+            return resp.choices[0].message.content
 
-        usage = getattr(r, "usage", None)
-        tokens_in = getattr(usage, "prompt_tokens", None) if usage else None
-        tokens_out = getattr(usage, "completion_tokens", None) if usage else None
-
-
-
-
-        # raw 
-        try:
-            raw_obj = r.model_dump()
-        except Exception:
+        # gemini is special
+        elif getattr(self, "provider", None) == "gemini":
             try:
-                raw_obj = json.loads(r.model_dump_json()) if hasattr(r, "json") else {"raw": str(r)}
+                import google.generativeai as gemini  
             except Exception:
-                raw_obj = {"raw": str(r)}
+                pass  
 
-        return LLMResponse(
-            declare=declare,
-            raw=raw_obj,
-            latency_ms=dt,
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
-        )
+            sys_prompt = next((m["content"] for m in messages if m["role"] == "system"), "")
+            user_chunks = [m["content"] for m in messages if m["role"] == "user"]
+            user_text = "\n\n".join(user_chunks)
+
+            model = self.gemini_model if hasattr(self, "gemini_model") else None
+            if model is None:
+                model = self.gemini_factory(self.model, system_instruction=sys_prompt) \
+                    if hasattr(self, "gemini_factory") else None
+            if model is None:
+                import google.generativeai as gemini
+                model = gemini.GenerativeModel(self.model, system_instruction=sys_prompt)
+
+            resp = model.generate_content(user_text)
+            return getattr(resp, "text", str(resp))
+
+        else:
+            #fallback: concatenate system + user messages
+            sys_txt = next((m["content"] for m in messages if m["role"] == "system"), "")
+            usr_txt = "\n\n".join(m["content"] for m in messages if m["role"] == "user")
+            prompt = (sys_txt + "\n\n" + usr_txt).strip()
+            return self.client.complete(prompt)  
