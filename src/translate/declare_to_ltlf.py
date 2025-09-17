@@ -2,6 +2,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Callable, Any
+from functools import reduce
 
 # AP sanitization
 _AP_SAFE = re.compile(r"[^A-Za-z0-9_]")
@@ -10,6 +11,9 @@ def sanitize_ap(name: str) -> str:
     core = _AP_SAFE.sub("_", core)
     prefix = core[0].upper() if core else "A"
     return f"{prefix}_{core}"
+
+def _occ_chain(a: str, k: int) -> str:
+    return reduce(lambda acc,_: And(a, F(acc)), range(max(0, k)), a)
 
 # LTLf helpers
 def X(phi: str) -> str:                 return f"X({phi})"
@@ -30,9 +34,18 @@ def _resp(a, b):            return G(Implies(a, F(b)))                       # r
 def _prec(a, b):            return Or(U(Not(b), a), G(Not(b)))               # precedence(a,b)
 def _succ(a, b):            return And(_resp(a,b), _prec(a,b))               # succession(a,b)
 def _chain_resp(a, b):      return G(Implies(a, X(b)))                       # chain-response(a,b)
-def _exist(a):              return F(a)                                      # existence(a)
-def _absence(a):            return G(Not(a))                                 # absence(a)
-def _exactly1(a):           return And(F(a), Not(F(And(a, F(a)))))           # exactly(a) ~ exactly 1
+def _existence(a, n=1):     return _existenceN(a, n)
+def _existenceN(a, n):                                                       # existence(a)
+                            n = int(n)
+                            return True_() if n == 0 else F(_occ_chain(a, n-1))
+def _absence(a, n=1):       return _absenceN(a, n)
+def _absenceN(a, n):                                                         # absence(a)
+                            n = int(n)
+                            if n < 1:        
+                                return Not(True_())
+                            return Not(F(_occ_chain(a, n-1)))                 
+def _exactly1(a, n=1):      return _exactlyN(a, n)
+def _exactlyN(a, n):        return And(_existenceN(a, n), _absenceN(a, n+1))  # exactly(a) ~ exactly N
 def _resp_exist(a, b):      return Implies(F(a), F(b))                        # responded-existence(a,b)
 def _coexist(a, b):         return And(_resp_exist(a,b), _resp_exist(b,a))    # coexistence(a,b)
 def _choice(a, b):          return Or(F(a), F(b))                             # choice(a,b)
@@ -41,7 +54,16 @@ def _neg_resp(a, b):        return G(Implies(a, Not(F(b))))                   # 
 def _not_succ(a, b):        return _neg_resp(a, b)                            # not-succession(a,b)
 def _neg_chain_resp(a, b):  return G(Implies(a, Not(X(b))))                   # neg-chain-response(a,b)
 def _init(a):               return a                                          # init(a): hold at pos 0
-def _end(a):                return F(f"({a}) & {Last()}")                                     # end(a): occurs at some final pos
+def _end(a):                return F(f"({a}) & {Last()}")                     # end(a): occurs at some final pos
+
+
+def _alt_resp(a, b):   return G(Implies(a, X(U(Not(a), b))))                  # G(a -> X(!a U b))
+def _alt_prec(a, b):   return And(_prec(a,b), G(Implies(b, Xw(_prec(a,b)))))  # precedence ∧ G(b -> Xw(precedence))
+def _alt_succ(a, b):   return And(_alt_resp(a,b), _alt_prec(a,b))
+
+def _chain_prec(a, b): return And(G(Implies(X(b), a)), Not(b))                 # if next is b, now is a; forbid b at pos 0
+def _chain_succ(a, b): return And(_chain_resp(a,b), _chain_prec(a,b))
+
 
 def _is_int(s: str) -> bool:
     try:
@@ -55,7 +77,7 @@ ALIASES: Dict[str, str] = {
     "existence": "existence",
     "absence": "absence",
     "exactly": "exactly",
-    "at-most-one": "absence",      # treat as absence(1)
+    "at-most-one": "absence",      
     "at_most_one": "absence",
     "atleastone": "existence",
     "at-least-one": "existence",
@@ -128,15 +150,21 @@ ALIASES: Dict[str, str] = {
     # boundaries
     "init": "init",
     "start": "init",
+    "first": "init",
+    "begin": "init",
+    "initially": "init",
+    "last": "end",
+    "finally": "end",
     "end": "end",
     "finish": "end",
 }
 
 # Dispatcher
 TEMPLATES: Dict[str, Callable[..., str]] = {
-    "existence": lambda x: _exist(x),                        
-    "absence":   lambda x, n=1: _absence(x, n),             
-    "exactly":   lambda x, n=1: _exactly1(x, n),              
+    "existence":   lambda x, n=1: _existence(x, n),
+    "absence":     lambda x, n=1: _absence(x, n),
+    "exactly":     lambda x, n=1: _exactly1(x, n),
+    "exactly(n)":  lambda x, n:   _exactlyN(x, n),
 
     "choice":              lambda x, y: _choice(x, y),
     "exclusive-choice":    lambda x, y: _excl_choice(x, y),
@@ -146,15 +174,6 @@ TEMPLATES: Dict[str, Callable[..., str]] = {
     "response":            lambda x, y: _resp(x, y),
     "precedence":          lambda x, y: _prec(x, y),
     "succession":          lambda x, y: _succ(x, y),
-    "alternate-response":  lambda x, y: G(Implies(x, X(U(Not(x), y)))),  # G(x -> X(!x U y))
-    "alternate-precedence":lambda x, y: Or(U(Not(y), X(x)), G(Not(y))),   # (true U (!y X x)) & G(!y)
-    "alternate-succession":lambda x, y: And(
-                                    G(Implies(x, X(U(Not(x), y)))),  # G(x -> X(!x U y))
-                                    Or(U(Not(y), X(x)), G(Not(y)))    # (true U (!y X x)) & G(!y)
-                                ),
-    "chain-precedence":    lambda x, y: Or(U(Not(y), X(x)), G(Not(y))),   # (true U (!y X x)) & G(!y)
-
-    "chain-response":      lambda x, y: _chain_resp(x, y),
 
     "neg-response":        lambda x, y: _neg_resp(x, y),
 
@@ -165,6 +184,14 @@ TEMPLATES: Dict[str, Callable[..., str]] = {
     "not-precedence":          lambda x, y: G(Implies(y, H(Not(x)))),   # G(y -> H ¬x)
 
     "not-chain-precedence":    lambda x, y: G(Implies(y, Not(Y(x)))),   # G(y -> ¬Y x)
+
+    "alternate-response":   lambda x, y: _alt_resp(x, y),
+    "alternate-precedence": lambda x, y: _alt_prec(x, y),
+    "alternate-succession": lambda x, y: _alt_succ(x, y),
+
+    "chain-response":       lambda x, y: _chain_resp(x, y),
+    "chain-precedence":     lambda x, y: _chain_prec(x, y),
+    "chain-succession":     lambda x, y: _chain_succ(x, y),
 
 
     "neg-succession":      lambda x, y: _not_succ(x, y),
@@ -234,12 +261,12 @@ def declare_string_to_ltlf_with_map(spec: str) -> EncodeResult:
 
         args_map = [_map_ap(a) for a in args_raw]
 
-        if tpl in ("exactly", "absence") and len(args_raw) == 2 and (_is_int(args_raw[0]) or _is_int(args_raw[1])):
+        if tpl in ("exactly", "absence", "existence") and len(args_raw) == 2 and (_is_int(args_raw[0]) or _is_int(args_raw[1])):
             if _is_int(args_raw[0]):
                 n = int(args_raw[0]); x = args_map[1]
             else:
                 n = int(args_raw[1]); x = args_map[0]
-            per.append(TEMPLATES[tpl](x, n))   # <-- per, nicht formulas
+            per.append(TEMPLATES[tpl](x, n))
             continue
 
         if tpl not in TEMPLATES:

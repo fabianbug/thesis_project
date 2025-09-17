@@ -4,17 +4,51 @@ RULES:
 - Follow the DECLARE syntax exactly.
 - Activities: use only tokens that appear as activity names in the NL text (typically activity descriptions like payment, close order, cancel payment, etc.). 
 - Do not invent new activities.
-- Never invent template names. If nothing fits, return an empty array for "declare".
+- Never invent template names. If nothing fits, return an empty string.
 - DECLARE constraint only. No comments, no explanations.
 - DECLARE output should be simple string output. No JSON, no XML, no lists, no arrays, no markdown.
 - Input: Natural Language 
 - Output: DECLARE 
 
+DECLARE SPECIFICATION:
+    Existence:
+        - existence(x)          // at least once
+        - existence(n,x)        // at least n times
+        - absence(x)            // never
+        - absence(n,x)          // at most (n-1) times
+        - exactly(x)            // exactly once
+        - exactly(n,x)          // exactly n times
+
+    Choice:
+        - choice(x,y)
+        - exclusive-choice(x,y)
+
+    Relation:
+        - responded-existence(x,y)
+        - coexistence(x,y)
+        - response(x,y)
+        - precedence(x,y)
+        - succession(x,y)
+        - alternate-response(x,y)
+        - alternate-precedence(x,y)
+        - alternate-succession(x,y)
+        - chain-response(x,y)
+        - chain-precedence(x,y)
+        - chain-succession(x,y)
+
+    Negation:
+        - neg-response(x,y)
+        - neg-chain-response(x,y)
+
+    Boundary:
+        - init(x)    
+        - end(x)     
+
 EXAMPLE:
 - Natural Language:
     There is a process with activities "close order", "pay order", and "cancel order".
     An order can be paid only if it has been closed before. 
-    When the order is closed, it must be later paid. 
+    When the order is closed, it must be paid later. 
     If the order is cancelled, it cannot be paid anymore. 
 
 - Will be translated to:
