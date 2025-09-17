@@ -1,107 +1,84 @@
 from __future__ import annotations
-import os, shutil, subprocess, tempfile
+
+import os
+import shutil
+import subprocess
 from pathlib import Path
+from typing import Optional
 
+__all__ = ["black_ltlf_equivalence"]
 
+def _normalize(formula: str) -> str: 
+    return " ".join(formula.split()).strip()
 
-def _find_exec(candidates: list[str]) -> str | None:
-    for c in candidates:
-        if not c:
-            continue
-        p = shutil.which(c) if "/" not in c else (str(Path(c)) if Path(c).exists() else None)
+def _resolve_black_bin(user_bin: Optional[str] = None) -> str:
+    if user_bin:
+        return user_bin
+    env_bin = os.environ.get("BLACK_BIN")
+    if env_bin:
+        return env_bin
+
+    hb = "/opt/homebrew/opt/black-sat/bin/black"        # hb = Homebrew default path on Macs
+    if Path(hb).exists() and os.access(hb, os.X_OK):
+        return hb
+
+    for name in ("black", "black-sat"):
+        p = shutil.which(name)
         if p:
             return p
-    return None
+    
+    return "black"
 
-def _xor(phi: str, psi: str) -> str:        # XOR for equivalence via UNSAT: (phi & !psi) | (!phi & psi)
-    return f"(({phi}) & (!({psi}))) | ((!({phi})) & ({psi}))"
+def _run_black_xor(phi: str, psi: str, *, black_bin: Optional[str], timeout: int, with_model: bool) -> str:
+    # Executes BLACK with XOR formula and returns. No JSON, just text. (solve --finite)
+    bin_path = _resolve_black_bin(black_bin)
+    phi_n = _normalize(phi)
+    psi_n = _normalize(psi)
+    xor_formula = f"(({phi_n}) & !({psi_n})) | ((!({phi_n})) & ({psi_n}))"
 
-def _run(cmd: list[str]) -> str:            #Run a command and return combined stdout+stderr (uppercased).
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    return (proc.stdout + proc.stderr).upper()
+    cmd = [bin_path, "solve", "--finite"]
+    if with_model:
+        cmd.append("-m")
+    cmd += ["-f", xor_formula]
 
-def _ascii(s: str) -> str:                  #Defensiv: swap Unicode to ASCII für CLIs.
-    return (
-        s.replace("¬", "!").replace("∧", "&").replace("∨", "|")
-         .replace("→", "->").replace("⇒", "->").replace("↔", "<->").strip()
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
     )
+    # if BLACK makes mistakes, we still want to see output
+    out = (proc.stdout or "").strip()
+    err = (proc.stderr or "").strip()
 
-# backends for equivalence checking BLACK and Aaltaf if blacksat fails
+    debug = Path("experiments/runs/_debug"); debug.mkdir(parents=True, exist_ok=True)
+    (debug / "black_last_stdout.txt").write_text(out, encoding="utf-8")
+    (debug / "black_last_stderr.txt").write_text(err, encoding="utf-8")
 
+    if not out and proc.returncode not in (0, 1):
+        raise RuntimeError(f"BLACK invocation failed (rc={proc.returncode}). Stderr:\n{err}")
 
-#Use BLACK CLI (black-sat) on XOR and return UNSAT
-def _equiv_with_black(phi: str, psi: str, black_bin: str) -> bool: 
-    phi = _ascii(phi); psi = _ascii(psi)
-    xor = _xor(phi, psi)
-    with tempfile.NamedTemporaryFile("w", suffix=".ltlf", delete=False) as tf:
-        tf.write(xor)
-        tmp = tf.name
-    try:
-        # Try common modes 'solve' or 'sat'
-        for mode in ("solve", "sat"):
-            out = _run([black_bin, "--logic", "ltlf", "--mode", mode, tmp])
-            if "UNSAT" in out or "UNSATISFIABLE" in out:
-                return True
-            if "SAT" in out and "UNSAT" not in out:
-                return False
-        # If we get here, output was not recognized -> treat as non-equivalent
-        raise RuntimeError(f"BLACK output not recognized.\n{out}")
-    finally:
-        Path(tmp).unlink(missing_ok=True)
+    return out or err  
 
-def _equiv_with_aalta(phi: str, psi: str, aalta_bin: str) -> bool:
-    """
-    Fallback using Aaltaf (LTLf solver). 
-    I check validity of (phi <-> psi):
-      validity( (phi -> psi) & (psi -> phi) )
-    """
-    phi = _ascii(phi); psi = _ascii(psi)
-    biimp = f"(({phi}) -> ({psi})) & (({psi}) -> ({phi}))"
-    with tempfile.NamedTemporaryFile("w", suffix=".ltl", delete=False) as tf:
-        tf.write(biimp)
-        tmp = tf.name
-    try:
-        out = _run([aalta_bin, tmp])
-        if "VALID" in out or "UNSAT" in out or "UNSATISFIABLE" in out:
-            return True
-        if "SAT" in out:
-            return False
+def black_ltlf_equivalence(
+    phi: str,
+    psi: str,
+    *,
+    black_bin: Optional[str] = None,
+    timeout: int = 120, # give it two minutes just in case
+    with_witness: bool = False, # if true, ask BLACK for a model on SAT (-m)
+) -> bool:
+    
+    # checks semantic equivalence of phi and psi.
+    out = _run_black_xor(phi, psi, black_bin=black_bin, timeout=timeout, with_model=with_witness)
+    u = out.upper()
 
-        raise RuntimeError(f"Aalta output not recognized.\n{out}")
-    finally:
-        Path(tmp).unlink(missing_ok=True)
+    # because XOR is UNSAT if equivalent, SAT if not equivalent 
+    if "UNSAT" in u:
+        return True
+    if "SAT" in u:
+        return False
 
-
-# public APIs to call
-def ltlf_equivalent(phi_ltlf: str, psi_ltlf: str) -> bool:      #Return True iff phi_ltlf ≡ psi_ltlf over finite traces.
-    # 1) Try BLACK from common locations / PATH
-    black_candidates = [
-        os.environ.get("BLACK_BIN"),
-        "./black/build/black-sat",
-        "./black/bin/black-sat",
-        "black-sat",   # PATH
-        "black",       # some builds install as 'black'
-    ]
-    black = _find_exec(black_candidates)
-    if black:
-        try:
-            return _equiv_with_black(phi_ltlf, psi_ltlf, black)
-        except Exception as e:
-            # If BLACK is found but errors out, we still attempt Aaltaf below.
-            pass
-
-    # 2) Fallback: Aaltaf (install/put on PATH), optional env override
-    aalta_candidates = [
-        os.environ.get("AALTA_BIN"),
-        "aaltaf", "aalta",
-        "/usr/local/bin/aaltaf", "/opt/homebrew/bin/aaltaf",
-    ]
-    aalta = _find_exec(aalta_candidates)
-    if aalta:
-        return _equiv_with_aalta(phi_ltlf, psi_ltlf, aalta)
-
-    # 3) No solver available
-    raise FileNotFoundError(
-        "No LTLf solver found. Provide BLACK_BIN to black-sat, "
-        "or install aaltaf and set AALTA_BIN / put it on PATH."
-    )
+    
+    raise RuntimeError(f"Could not parse BLACK result. Output was:\n{out}")

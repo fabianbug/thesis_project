@@ -1,6 +1,6 @@
 # DECLARE generation with large language models
 
-This project is my bachelor’s thesis. I study how well LLMs can turn short natural language rules into **DECLARE** constraints. For each rule in natural language, the system asks an LLM to produce a DECLARE constraint. Then I compare that constraint against a **PHI** (ground-truth) constraint. I will translate both **PHI** and **PSI** (prediction) from DECLARE to LTLf and use the tool BLACK to check semantic equivalence (so two different, but equivalent formulas will count as correct). BLACK supports LTL/LTLf on finite traces and related logics. Unfortunately no DECLARE.
+This project is my bachelor’s thesis. I create a pipeline to study how well LLMs can turn short natural language rules into **DECLARE** constraints. I start with a For each rule in natural language, the system asks an LLM to produce a DECLARE constraint. Then I compare that constraint against a **PHI** (ground-truth) constraint. I will translate both **PHI** and **PSI** (prediction) from DECLARE to LTLf and use the tool BLACK to check semantic equivalence (so two different, but equivalent formulas will count as correct). BLACK supports LTL/LTLf on finite traces and related logics. Unfortunately no DECLARE.
 
 The repository is small on purpose and aims to be easy to run and to reproduce. Code lives in `src/`, sample test cases live in `data/testcases/`, and all results are written to `experiments/results/` so it is always clear where outputs goes.
 

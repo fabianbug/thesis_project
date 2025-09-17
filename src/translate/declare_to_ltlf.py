@@ -7,10 +7,21 @@ from functools import reduce
 # AP sanitization
 _AP_SAFE = re.compile(r"[^A-Za-z0-9_]")
 def sanitize_ap(name: str) -> str:
-    core = name.strip().lower().replace(" ", "_")
+    core = (name or "").strip().lower().replace(" ", "_")
     core = _AP_SAFE.sub("_", core)
-    prefix = core[0].upper() if core else "A"
+    core = core.strip("_")
+    if not core:
+        return "A_p"
+    first = core[0]
+    if not (first.isalpha() or first == "_"):
+        core = f"a_{core}"
+    while "__" in core:
+        core = core.replace("__", "_")
+    if core[0] == "_":
+        core = "a" + core
+    prefix = core[0].upper()
     return f"{prefix}_{core}"
+
 
 def _occ_chain(a: str, k: int) -> str:
     return reduce(lambda acc,_: And(a, F(acc)), range(max(0, k)), a)
@@ -146,6 +157,8 @@ ALIASES: Dict[str, str] = {
 
     "not-coexistence": "not-coexistence",
     "not_coexistence": "not-coexistence",
+    "neg-coexistence": "not-coexistence",
+    "neg_coexistence": "not-coexistence",
 
     # boundaries
     "init": "init",

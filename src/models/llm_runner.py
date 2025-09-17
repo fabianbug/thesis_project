@@ -4,21 +4,20 @@ from openai import OpenAI
 from groq import Groq
 import google.generativeai as gemini
 from src.config import OPENAI_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, require
-from src.pipeline.response_json_handling import LLMResponse, _extract_json
 
 class LLMRunner:
     def __init__(self, provider: str, model: str, api_key: Optional[str] = None, temperature: float = 1.0):
         self.provider = provider.lower().strip()
         self.model, self.temperature = model, temperature
 
-        if self.provider == "gemini":
+        if self.provider == "gemini" or self.provider == "google":
             key = api_key or require("GEMINI_API_KEY", GEMINI_API_KEY)
             gemini.configure(api_key=key)
             self.client = gemini.GenerativeModel(model_name=model)
         elif self.provider == "groq":
             key = api_key or require("GROQ_API_KEY", GROQ_API_KEY)
             self.client = Groq(api_key=key)
-        elif self.provider == "openai":
+        elif self.provider == "openai" or self.provider == "chatgpt":
             key = api_key or require("OPENAI_API_KEY", OPENAI_API_KEY)
             self.client = OpenAI(api_key=key)
         else:
@@ -35,7 +34,7 @@ class LLMRunner:
                 {"role": "user", "content": user},
             ]
 
-        if getattr(self, "provider", None) == "openai":
+        if getattr(self, "provider", None) == "openai" or getattr(self, "provider", None) == "chatgpt":
             resp = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -44,7 +43,7 @@ class LLMRunner:
             return resp.choices[0].message.content
 
         # gemini is special
-        elif getattr(self, "provider", None) == "gemini":
+        elif getattr(self, "provider", None) == "gemini" or getattr(self, "provider", None) == "google":
             try:
                 import google.generativeai as gemini  
             except Exception:
