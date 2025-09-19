@@ -1,0 +1,14 @@
+init(Create a candidate account)
+atmost(1, Create a candidate account)
+end(Receive admission notification)
+
+response(Create a candidate account, Enter evaluation phase)
+response(Enter evaluation phase, Register for selection round)
+response(Register for selection round, Upload admission test score)
+response(Upload admission test score, Receive admission notification)
+
+precedence(Enter evaluation phase, Register for selection round)
+precedence(Register for selection round, Upload admission test score)
+
+absence(2, Receive rejection notification)
+not-coexistence(Receive admission notification, Receive rejection notification)

@@ -1,0 +1,27 @@
+----- Syntactic comparison (DECLARE sets) -----
+original PHI=11   after LLM translation PSI=11
+OK? False
+Missing in PSI (present in PHI):
+  - absence(2, Receive rejection notification)
+  - absence(Create a candidate account)
+  - end(Receive admission notification)
+  - init(Create a candidate account)
+  - not-coexistence(Receive admission notification, Receive rejection notification)
+  - precedence(Enter evaluation phase, Register for selection round)
+  - precedence(Register for selection round, Upload admission test score)
+  - response(Create a candidate account, Enter evaluation phase)
+  - response(Enter evaluation phase, Register for selection round)
+  - response(Register for selection round, Upload admission test score)
+  - response(Upload admission test score, Receive admission notification)
+Added in PSI (not in PHI):
+  + absence(receive rejection notification)
+  + end(receive admission notification)
+  + exactly(create candidate account)
+  + init(create candidate account)
+  + neg-response(receive admission notification, receive rejection notification)
+  + precedence(create candidate account, enter evaluation phase)
+  + precedence(enter evaluation phase, register selection round)
+  + precedence(register selection round, upload admission test score)
+  + precedence(upload admission test score, receive admission notification)
+  + response(enter evaluation phase, register selection round)
+  + response(register selection round, upload admission test score)

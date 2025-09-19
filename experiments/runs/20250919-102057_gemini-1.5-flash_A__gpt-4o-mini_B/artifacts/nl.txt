@@ -1,0 +1,21 @@
+The process begins by creating a candidate account.
+
+A candidate may create at most one candidate account.
+
+The process ends when the candidate receives an admission notification.
+
+Creating a candidate account is followed by entering the evaluation phase.
+
+Entering the evaluation phase is followed by registering for the selection round.
+
+Registering for the selection round is followed by uploading the admission test score.
+
+Uploading the admission test score is followed by receiving an admission notification.
+
+Registering for the selection round must occur after entering the evaluation phase.
+
+Uploading the admission test score must occur after registering for the selection round.
+
+A candidate will receive at most one rejection notification.
+
+A candidate cannot receive both an admission notification and a rejection notification.

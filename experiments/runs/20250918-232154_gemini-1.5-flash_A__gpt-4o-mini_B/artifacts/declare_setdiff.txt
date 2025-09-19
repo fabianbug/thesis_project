@@ -1,0 +1,33 @@
+----- Syntactic comparison (DECLARE sets) -----
+original PHI=14   after LLM translation PSI=14
+OK? False
+Missing in PSI (present in PHI):
+  - absence(2, cancel order)
+  - end(close order)
+  - exactly(close order)
+  - exactly(receive order)
+  - init(receive order)
+  - neg-response(cancel order, ship order)
+  - neg-response(pack items, cancel order)
+  - not-coexistence(deliver order, issue refund)
+  - precedence(validate payment, pack items)
+  - response(cancel order, issue refund)
+  - response(pack items, ship order)
+  - response(receive order, validate payment)
+  - response(ship order, deliver order)
+  - response(ship order, send invoice)
+Added in PSI (not in PHI):
+  + absence(2, canceling order)
+  + end(closing order)
+  + exactly(closing order)
+  + exactly(receiving order)
+  + exclusive-choice(delivering order, issuing refund)
+  + init(receiving order)
+  + neg-response(canceling order, shipping order)
+  + neg-response(packing items, canceling order)
+  + precedence(validating payment, packing items)
+  + response(canceling order, issuing refund)
+  + response(packing items, shipping order)
+  + response(receiving order, validating payment)
+  + response(shipping order, delivering order)
+  + response(shipping order, sending invoice)

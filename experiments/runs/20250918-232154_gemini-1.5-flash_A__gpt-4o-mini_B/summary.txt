@@ -1,0 +1,7 @@
+Summary
+Testcase: testcase1.txt
+LLM A (DECLARE to NL): google/gemini-1.5-flash  T=1.0
+LLM B (NL to DECLARE): openai/gpt-4o-mini  T=1.0
+
+SYNTAX DECLARE set comparison: DIFFERENT
+SEMANTICS LTLf equivalence: equivalent

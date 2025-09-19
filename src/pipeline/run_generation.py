@@ -104,7 +104,7 @@ def main():
         full_black = f"BLACK: {semantics_status}\nPHI: {phi_ltlf}\nPSI: {psi_ltlf}\n\n"
         write_text(artifacts / "black.txt", full_black)
     except Exception as e:
-        semantics_status = f"skipped: {e.__class__.__name__}"
+        semantics_status = {e.__class__.__name__}
 
     # console summary
     summary = []

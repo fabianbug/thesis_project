@@ -31,6 +31,9 @@ def X(phi: str) -> str:                 return f"X({phi})"
 def F(phi: str) -> str:                 return f"F({phi})"
 def G(phi: str) -> str:                 return f"G({phi})"
 def U(a: str, b: str) -> str:           return f"(({a}) U ({b}))"
+def H(phi: str) -> str:                 return Not(O(Not(phi)))
+def Y(phi: str) -> str:                 return f"Y({phi})"
+def O(phi: str) -> str:                 return f"O({phi})"
 def Not(phi: str) -> str:               return f"!({phi})"
 def And(*args: str) -> str:             return " & ".join(f"({a})" for a in args if a)
 def Or(*args: str) -> str:              return " | ".join(f"({a})" for a in args if a)
@@ -76,9 +79,10 @@ def _chain_prec(a, b): return And(G(Implies(X(b), a)), Not(b))                 #
 def _chain_succ(a, b): return And(_chain_resp(a,b), _chain_prec(a,b))
 
 
-def _is_int(s: str) -> bool:
+def _is_int(s) -> bool:
     try:
-        int(s); return True
+        int(s)
+        return True
     except Exception:
         return False
     
@@ -90,6 +94,10 @@ ALIASES: Dict[str, str] = {
     "exactly": "exactly",
     "at-most-one": "absence",      
     "at_most_one": "absence",
+    "at-most": "absence",
+    "at_most": "absence",
+    "atmost": "absence",
+    "atmostone": "absence",
     "atleastone": "existence",
     "at-least-one": "existence",
     "at_least_one": "existence",
@@ -274,12 +282,15 @@ def declare_string_to_ltlf_with_map(spec: str) -> EncodeResult:
 
         args_map = [_map_ap(a) for a in args_raw]
 
-        if tpl in ("exactly", "absence", "existence") and len(args_raw) == 2 and (_is_int(args_raw[0]) or _is_int(args_raw[1])):
+        if tpl in ("exactly", "absence", "existence", "atmost") and len(args_raw) == 2 and (_is_int(args_raw[0]) or _is_int(args_raw[1])):
             if _is_int(args_raw[0]):
                 n = int(args_raw[0]); x = args_map[1]
             else:
                 n = int(args_raw[1]); x = args_map[0]
             per.append(TEMPLATES[tpl](x, n))
+            
+            if tpl == "atmost":
+                per.append(TEMPLATES["absence"](x, n + 1))
             continue
 
         if tpl not in TEMPLATES:

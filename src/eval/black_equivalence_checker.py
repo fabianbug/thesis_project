@@ -66,7 +66,7 @@ def black_ltlf_equivalence(
     psi: str,
     *,
     black_bin: Optional[str] = None,
-    timeout: int = 120, # give it two minutes just in case
+    timeout: int = 3600, # give it 1h just in case
     with_witness: bool = False, # if true, ask BLACK for a model on SAT (-m)
 ) -> bool:
     
